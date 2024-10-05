@@ -1111,7 +1111,7 @@ namespace GridSystem
             };
         }
         
-        internal static (int, int, int) ToCoords(this GridAxis axis)
+        public static (int, int, int) ToCoords(this GridAxis axis)
         {
             return axis switch
             {
@@ -1122,7 +1122,7 @@ namespace GridSystem
             };
         }
 
-        internal static (int, int, int) ToCoords(this GridAxis axis, int i)
+        public static (int, int, int) ToCoords(this GridAxis axis, int i)
         {
             return axis switch
             {
