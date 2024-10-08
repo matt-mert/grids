@@ -9,6 +9,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 
 namespace GridSystem
@@ -26,12 +27,13 @@ namespace GridSystem
     /// <summary>
     /// Base interface for objects to be placed int the grid units
     /// </summary>
-    public interface IGridElement
+    public interface IGridObject
     {
         /// <summary>
-        /// Unit is set with reflection
+        /// IUnit property is set with reflection by the system during creation of the grid. <br/>
+        /// Do NOT set it yourself unless you know exactly what you are doing.
         /// </summary>
-        public IGridUnit Unit { get; }
+        IGridUnit GridUnit { get; }
         void OnCreate();
         void OnDispose();
         void OnShift();
@@ -40,19 +42,25 @@ namespace GridSystem
     /// <summary>
     /// Base interface for 3d volume-based grids
     /// </summary>
-    public interface IGridVolume
+    public interface IGridVolume : IEnumerable<IGridUnit>
     {
-        public int Width { get; }
-        public int Height { get; }
-        public int Depth { get; }
-        public int Count { get; }
-        public int Dimension { get; }
+        int Width { get; }
+        int Height { get; }
+        int Depth { get; }
+        int Count { get; }
+        int Dimension { get; }
         IGridUnit this[int i, int j, int k] { get; }
-        IEnumerator<IGridSurface> GetEnumerator();
-        IGridSurface GetSurface(GridAxis axis, int index);
+        IGridUnit this[(int, int, int) coords] { get; }
+        IGridSurface GetSurface(GridAxis normal, int index);
         IGridUnit GetUnit(int i, int j, int k);
-        void CreateVolume<T>(Func<T> getter) where T : IGridElement;
-        void DisposeVolume();
+        IGridUnit GetUnit((int, int, int) coords);
+        IGridUnit[] GetUnits();
+        IGridUnit[] GetUnits((int, int, int) from, (int, int, int) to);
+        void CreateVolume<T>(Func<T> getter) where T : class, IGridObject;
+        void RemoveVolume();
+        void ResizeVolume(int width, int height, int depth);
+        void TrimVolume((int, int, int) from, (int, int, int) to);
+        void DisposeUnits();
         void AddSurface(GridAxis normal);
         void InsertSurface(GridAxis normal, int index);
         void RemoveSurface(GridAxis normal, int index);
@@ -63,18 +71,25 @@ namespace GridSystem
     /// </summary>
     public interface IGridSurface
     {
-        public IGridVolume Volume { get; }
-        public GridAxis Normal { get; }
-        public int Width { get; }
-        public int Height { get; }
-        public int Count { get; }
-        public int Dimension { get; }
+        IGridVolume Volume { get; }
+        GridAxis Normal { get; }
+        int Width { get; }
+        int Height { get; }
+        int Count { get; }
+        int Dimension { get; }
         IGridUnit this[int i, int j] { get; }
-        IEnumerator<IGridLine> GetEnumerator();
+        IGridUnit this[(int, int) coords] { get; }
+        IEnumerator<IGridUnit> GetEnumerator();
         IGridLine GetLine(GridAxis axis, int index);
         IGridUnit GetUnit(int i, int j);
-        void CreateSurface<T>(Func<T> getter) where T : IGridElement;
-        void DisposeSurface();
+        IGridUnit GetUnit((int, int) coords);
+        IGridUnit[] GetUnits();
+        IGridUnit[] GetUnits((int, int) from, (int, int) to);
+        void CreateSurface<T>(Func<T> getter) where T : class, IGridObject;
+        void RemoveSurface();
+        void ResizeSurface(int width, int height);
+        void TrimSurface((int, int) from, (int, int) to);
+        void DisposeUnits();
         void AddLine(GridAxis axis);
         void InsertLine(GridAxis axis, int index);
         void RemoveLine(GridAxis axis, int index);
@@ -85,17 +100,22 @@ namespace GridSystem
     /// </summary>
     public interface IGridLine
     {
-        public IGridVolume Volume { get; }
-        public IGridSurface Surface { get; }
-        public GridAxis Axis { get; }
-        public int Count { get; }
-        public int Length { get; }
-        public int Dimension { get; }
+        IGridVolume Volume { get; }
+        IGridSurface Surface { get; }
+        GridAxis Axis { get; }
+        int Count { get; }
+        int Length { get; }
+        int Dimension { get; }
         IGridUnit this[int i] { get; }
         IEnumerator<IGridUnit> GetEnumerator();
         IGridUnit GetUnit(int i);
-        void CreateLine<T>(Func<T> getter) where T : IGridElement;
-        void DisposeLine();
+        IGridUnit[] GetUnits();
+        IGridUnit[] GetUnits(int from, int to);
+        void CreateLine<T>(Func<T> getter) where T : class, IGridObject;
+        void RemoveLine();
+        void ResizeLine(int length);
+        void TrimLine(int from, int to);
+        void DisposeUnits();
         void AddUnit();
         void InsertUnit(int index);
         void RemoveUnit(int index);
@@ -106,13 +126,14 @@ namespace GridSystem
     /// </summary>
     public interface IGridUnit
     {
-        public IGridElement Element { get; }
-        public IGridVolume Volume { get; }
-        public IGridSurface Surface { get; }
-        public IGridLine Line { get; }
-        public (int, int, int) Coords { get; }
-        public int Dimension { get; }
-        void CreateUnit<T>(Func<T> getter) where T : IGridElement;
+        IGridObject Object { get; }
+        IGridVolume Volume { get; }
+        IGridSurface Surface { get; }
+        IGridLine Line { get; }
+        (int, int, int) Coords { get; }
+        int Dimension { get; }
+        void SetObject<T>(T obj) where T : class, IGridObject;
+        void CreateUnit<T>(Func<T> getter) where T : class, IGridObject;
         void DisposeUnit();
     }
 
@@ -120,7 +141,7 @@ namespace GridSystem
     /// Volume-based grid that contains surfaces, lines, and units on three axes
     /// </summary>
     /// <typeparam name="T">Type of the object to be placed in the grid units</typeparam>
-    public class GridVolume<T> : IEnumerable<IGridSurface>, IGridVolume where T : class, IGridElement
+    public class GridVolume<T> : IGridVolume where T : class, IGridObject
     {
         public int Dimension => 3;
         public int Width => _surfaces[GridAxis.x].Count;
@@ -147,26 +168,113 @@ namespace GridSystem
             GenerateVolume(width, height, depth);
         }
 
-        public IGridUnit this[int i, int j, int k] => _units[(i, j, k)];
-
-        public IEnumerator<IGridSurface> GetEnumerator() => _surfaces[GridAxis.z].GetEnumerator();
+        IGridUnit IGridVolume.this[int i, int j, int k] => _units[(i, j, k)];
+        
+        IGridUnit IGridVolume.this[(int, int, int) coords] => _units[(coords.Item1, coords.Item2, coords.Item3)];
+        
+        public GridUnit<T> this[int i, int j, int k] => _units[(i, j, k)];
+        
+        public GridUnit<T> this[(int, int, int) coords] => _units[(coords.Item1, coords.Item2, coords.Item3)];
+        
+        public IEnumerator<IGridUnit> GetEnumerator() => _units.Values.GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        public IGridSurface GetSurface(GridAxis normal, int i) => _surfaces[normal][i];
+        IGridSurface IGridVolume.GetSurface(GridAxis normal, int index) => _surfaces[normal][index];
 
-        public IGridUnit GetUnit(int i, int j, int k) => this[i, j, k];
+        public GridSurface<T> GetSurface(GridAxis normal, int index) => _surfaces[normal][index];
 
-        public void CreateVolume<TElement>(Func<TElement> getter) where TElement : IGridElement
+        IGridUnit IGridVolume.GetUnit(int i, int j, int k) => _units[(i, j, k)];
+        
+        IGridUnit IGridVolume.GetUnit((int, int, int) coords) => _units[coords];
+
+        public GridUnit<T> GetUnit(int i, int j, int k) => _units[(i, j, k)];
+        
+        public GridUnit<T> GetUnit((int, int, int) coords) => _units[coords];
+
+        IGridUnit[] IGridVolume.GetUnits()
+        {
+            var result = new IGridUnit[Count];
+            var counter = 0;
+            for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++) for (var k = 0; k < Depth; k++)
+            {
+                result[counter] = _units[(i, j, k)];
+                counter++;
+            }
+
+            return result;
+        }
+
+        public GridUnit<T>[] GetUnits() => _units.Values.ToArray();
+
+        IGridUnit[] IGridVolume.GetUnits((int, int, int) from, (int, int, int) to)
+        {
+            var result = new IGridUnit[Count];
+            var counter = 0;
+            for (var i = from.Item1; i < to.Item1; i++)
+            for (var j = from.Item2; j < to.Item2; j++)
+            for (var k = from.Item3; k < to.Item3; k++)
+            {
+                result[counter] = _units[(i, j, k)];
+                counter++;
+            }
+
+            return result;
+        }
+
+        public GridUnit<T>[] GetUnits((int, int, int) from, (int, int, int) to)
+        {
+            var result = new GridUnit<T>[Count];
+            var counter = 0;
+            for (var i = from.Item1; i < to.Item1; i++)
+            for (var j = from.Item2; j < to.Item2; j++)
+            for (var k = from.Item3; k < to.Item3; k++)
+            {
+                result[counter] = _units[(i, j, k)];
+                counter++;
+            }
+
+            return result;
+        }
+
+        void IGridVolume.CreateVolume<TObj>(Func<TObj> getter)
         {
             _getter = getter as Func<T>;
             for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++) for (var k = 0; k < Depth; k++)
             {
-                this[i, j, k].CreateUnit(getter);
+                _units[(i, j, k)].CreateUnit(_getter);
             }
         }
 
-        public void DisposeVolume()
+        public void CreateVolume(Func<T> getter)
+        {
+            _getter = getter;
+            for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++) for (var k = 0; k < Depth; k++)
+            {
+                _units[(i, j, k)].CreateUnit(getter);
+            }
+        }
+        
+        public void RemoveVolume()
+        {
+            for (var i = Width - 1; i >= 0; i--) RemoveSurface(GridAxis.x, i);
+        }
+
+        public void ResizeVolume(int width, int height, int depth)
+        {
+            for (var i = Width - 1; i >= width; i--) RemoveSurface(GridAxis.x, i);
+            for (var i = Height - 1; i >= height; i--) RemoveSurface(GridAxis.y, i);
+            for (var i = Depth - 1; i >= depth; i--) RemoveSurface(GridAxis.z, i);
+        }
+        
+        public void TrimVolume((int, int, int) from, (int, int, int) to)
+        {
+            for (var i = to.Item1 - 1; i >= from.Item1; i--) RemoveSurface(GridAxis.x, i);
+            for (var i = to.Item2 - 1; i >= from.Item2; i--) RemoveSurface(GridAxis.y, i);
+            for (var i = to.Item3 - 1; i >= from.Item3; i--) RemoveSurface(GridAxis.z, i);
+        }
+
+        public void DisposeUnits()
         {
             for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++) for (var k = 0; k < Depth; k++)
             {
@@ -176,9 +284,9 @@ namespace GridSystem
 
         public void AddSurface(GridAxis normal)
         {
-            var width = GridUtilities.GetWidth(normal, Width, Height, Depth);
-            var height = GridUtilities.GetHeight(normal, Width, Height, Depth);
-            var depth = GridUtilities.GetDepth(normal, Width, Height, Depth);
+            var width = GridsUtilities.GetWidth(normal, Width, Height, Depth);
+            var height = GridsUtilities.GetHeight(normal, Width, Height, Depth);
+            var depth = GridsUtilities.GetDepth(normal, Width, Height, Depth);
             
             AddUnits(normal, width, height, depth);
             AddLines(normal, width, height, depth);
@@ -187,9 +295,9 @@ namespace GridSystem
 
         public void InsertSurface(GridAxis normal, int index)
         {
-            var width = GridUtilities.GetWidth(normal, Width, Height, Depth);
-            var height = GridUtilities.GetHeight(normal, Width, Height, Depth);
-            var depth = GridUtilities.GetDepth(normal, Width, Height, Depth);
+            var width = GridsUtilities.GetWidth(normal, Width, Height, Depth);
+            var height = GridsUtilities.GetHeight(normal, Width, Height, Depth);
+            var depth = GridsUtilities.GetDepth(normal, Width, Height, Depth);
             
             InsertUnits(index, normal, width, height, depth);
             InsertLines(index, normal, width, height, depth);
@@ -198,9 +306,9 @@ namespace GridSystem
 
         public void RemoveSurface(GridAxis normal, int index)
         {
-            var width = GridUtilities.GetWidth(normal, Width, Height, Depth);
-            var height = GridUtilities.GetHeight(normal, Width, Height, Depth);
-            var depth = GridUtilities.GetDepth(normal, Width, Height, Depth);
+            var width = GridsUtilities.GetWidth(normal, Width, Height, Depth);
+            var height = GridsUtilities.GetHeight(normal, Width, Height, Depth);
+            var depth = GridsUtilities.GetDepth(normal, Width, Height, Depth);
             
             RemoveUnits(index, normal, width, height, depth);
             RemoveLines(index, normal, width, height, depth);
@@ -219,9 +327,9 @@ namespace GridSystem
             for (var normalIndex = 0; normalIndex < 3; normalIndex++)
             {
                 var normal = (GridAxis)normalIndex;
-                var index = GridUtilities.GetDepth(normal, x, y, z);
-                var width = GridUtilities.GetWidth(normal, x, y, z);
-                var height = GridUtilities.GetHeight(normal, x, y, z);
+                var index = GridsUtilities.GetDepth(normal, x, y, z);
+                var width = GridsUtilities.GetWidth(normal, x, y, z);
+                var height = GridsUtilities.GetHeight(normal, x, y, z);
                 var widthAxis = normal.ToWidthAxis();
                 var heightAxis = normal.ToHeightAxis();
 
@@ -232,18 +340,18 @@ namespace GridSystem
                     surface._lines.Add(widthAxis, new List<GridLine<T>>(height));
                     for (var j = 0; j < height; j++)
                     {
-                        var vector = GridUtilities.ConvertToVector(normal, 0, j, i);
+                        var vector = GridsUtilities.ConvertToVector(normal, 0, j, i);
                         surface._lines[widthAxis].Add(_lines[widthAxis][vector]);
                     }
                     surface._lines.Add(heightAxis, new List<GridLine<T>>(width));
                     for (var j = 0; j < width; j++)
                     {
-                        var vector = GridUtilities.ConvertToVector(normal, j, 0, i);
+                        var vector = GridsUtilities.ConvertToVector(normal, j, 0, i);
                         surface._lines[heightAxis].Add(_lines[heightAxis][vector]);
                     }
                     for (var j = 0; j < height; j++) for (var k = 0; k < width; k++)
                     {
-                        var vector = GridUtilities.ConvertToVector(normal, k, j, i);
+                        var vector = GridsUtilities.ConvertToVector(normal, k, j, i);
                         surface._units.Add(vector, _units[vector]);
                     }
 
@@ -299,18 +407,18 @@ namespace GridSystem
             surface._lines.Add(widthAxis, new List<GridLine<T>>(height));
             for (var i = 0; i < height; i++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, 0, i, depth);
+                var vector = GridsUtilities.ConvertToVector(normal, 0, i, depth);
                 surface._lines[widthAxis].Add(_lines[widthAxis][vector]);
             }
             surface._lines.Add(heightAxis, new List<GridLine<T>>(width));
             for (var i = 0; i < width; i++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, 0, depth);
+                var vector = GridsUtilities.ConvertToVector(normal, i, 0, depth);
                 surface._lines[heightAxis].Add(_lines[heightAxis][vector]);
             }
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, depth);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, depth);
                 surface._units.Add(vector, _units[vector]);
             }
 
@@ -327,10 +435,10 @@ namespace GridSystem
                 var line = new GridLine<T>(this, height, heightAxis);
                 for (var j = 0; j < height; j++)
                 {
-                    var unitVector = GridUtilities.ConvertToVector(normal, i, j, depth);
+                    var unitVector = GridsUtilities.ConvertToVector(normal, i, j, depth);
                     line._units.Add(_units[unitVector]);
                 }
-                var vector = GridUtilities.ConvertToVector(normal, i, 0, depth);
+                var vector = GridsUtilities.ConvertToVector(normal, i, 0, depth);
                 _lines[heightAxis].Add(vector, line);
             }
             for (var i = 0; i < height; i++)
@@ -338,10 +446,10 @@ namespace GridSystem
                 var line = new GridLine<T>(this, width, widthAxis);
                 for (var j = 0; j < width; j++)
                 {
-                    var unitVector = GridUtilities.ConvertToVector(normal, j, i, depth);
+                    var unitVector = GridsUtilities.ConvertToVector(normal, j, i, depth);
                     line._units.Add(_units[unitVector]);
                 }
-                var vector = GridUtilities.ConvertToVector(normal, 0, i, depth);
+                var vector = GridsUtilities.ConvertToVector(normal, 0, i, depth);
                 _lines[widthAxis].Add(vector, line);
             }
         }
@@ -350,7 +458,7 @@ namespace GridSystem
         {
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, depth);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, depth);
                 var newUnit = new GridUnit<T>(this, vector);
                 newUnit.CreateUnit(_getter);
                 _units.Add(vector, newUnit);
@@ -366,18 +474,18 @@ namespace GridSystem
             newSurface._lines.Add(widthAxis, new List<GridLine<T>>(height));
             for (var i = 0; i < height; i++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, 0, i, index);
+                var vector = GridsUtilities.ConvertToVector(normal, 0, i, index);
                 newSurface._lines[widthAxis].Add(_lines[widthAxis][vector]);
             }
             newSurface._lines.Add(heightAxis, new List<GridLine<T>>(width));
             for (var i = 0; i < width; i++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, 0, index);
+                var vector = GridsUtilities.ConvertToVector(normal, i, 0, index);
                 newSurface._lines[heightAxis].Add(_lines[heightAxis][vector]);
             }
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, index);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, index);
                 newSurface._units.Add(vector, _units[vector]);
             }
             
@@ -393,23 +501,23 @@ namespace GridSystem
             {
                 for (var j = 0; j < width; j++)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(normal, j, 0, i);
+                    var oldVector = GridsUtilities.ConvertToVector(normal, j, 0, i);
                     var existingLine = _lines[heightAxis][oldVector];
-                    var newVector = GridUtilities.ConvertToVector(normal, j, 0, i + 1);
+                    var newVector = GridsUtilities.ConvertToVector(normal, j, 0, i + 1);
                     _lines[heightAxis][newVector] = existingLine;
                 }
                 for (var j = 0; j < height; j++)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(normal, 0, j, i);
+                    var oldVector = GridsUtilities.ConvertToVector(normal, 0, j, i);
                     var existingLine = _lines[widthAxis][oldVector];
-                    var newVector = GridUtilities.ConvertToVector(normal, 0, j, i + 1);
+                    var newVector = GridsUtilities.ConvertToVector(normal, 0, j, i + 1);
                     _lines[widthAxis][newVector] = existingLine;
                 }
             }
             
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, 0);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, 0);
                 var line = _lines[normal][vector];
                 line._units.Insert(index, _units[vector]);
             }
@@ -419,10 +527,10 @@ namespace GridSystem
                 var newLine = new GridLine<T>(this, height, heightAxis);
                 for (var j = 0; j < height; j++)
                 {
-                    var unitVector = GridUtilities.ConvertToVector(normal, i, j, index);
+                    var unitVector = GridsUtilities.ConvertToVector(normal, i, j, index);
                     newLine._units.Add(_units[unitVector]);
                 }
-                var lineVector = GridUtilities.ConvertToVector(normal, i, 0, index);
+                var lineVector = GridsUtilities.ConvertToVector(normal, i, 0, index);
                 _lines[heightAxis][lineVector] = newLine;
             }
             for (var i = 0; i < height; i++)
@@ -430,10 +538,10 @@ namespace GridSystem
                 var newLine = new GridLine<T>(this, width, widthAxis);
                 for (var j = 0; j < width; j++)
                 {
-                    var unitVector = GridUtilities.ConvertToVector(normal, j, i, index);
+                    var unitVector = GridsUtilities.ConvertToVector(normal, j, i, index);
                     newLine._units.Add(_units[unitVector]);
                 }
-                var lineVector = GridUtilities.ConvertToVector(normal, 0, i, index);
+                var lineVector = GridsUtilities.ConvertToVector(normal, 0, i, index);
                 _lines[widthAxis][lineVector] = newLine;
             }
         }
@@ -444,9 +552,9 @@ namespace GridSystem
             {
                 for (var k = depth - 1; k >= index; k--)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(normal, i, j, k);
+                    var oldVector = GridsUtilities.ConvertToVector(normal, i, j, k);
                     var existingUnit = _units[oldVector];
-                    var newVector = GridUtilities.ConvertToVector(normal, i, j, k + 1);
+                    var newVector = GridsUtilities.ConvertToVector(normal, i, j, k + 1);
                     _units[newVector] = existingUnit;
                     _units.Remove(oldVector);
                     existingUnit._coords = newVector;
@@ -456,7 +564,7 @@ namespace GridSystem
             
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, index);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, index);
                 var newUnit = new GridUnit<T>(this, vector);
                 newUnit.CreateUnit(_getter);
                 _units.Add(vector, newUnit);
@@ -475,18 +583,18 @@ namespace GridSystem
             
             for (var i = 0; i < width; i++)
             {
-                var lineVector = GridUtilities.ConvertToVector(normal, i, 0, index);
+                var lineVector = GridsUtilities.ConvertToVector(normal, i, 0, index);
                 _lines[heightAxis].Remove(lineVector);
             }
             for (var i = 0; i < height; i++)
             {
-                var lineVector = GridUtilities.ConvertToVector(normal, 0, i, index);
+                var lineVector = GridsUtilities.ConvertToVector(normal, 0, i, index);
                 _lines[widthAxis].Remove(lineVector);
             }
             
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, 0);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, 0);
                 var line = _lines[normal][vector];
                 line._units.RemoveAt(index);
             }
@@ -500,16 +608,16 @@ namespace GridSystem
             {
                 for (var j = 0; j < width; j++)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(normal, j, 0, i);
+                    var oldVector = GridsUtilities.ConvertToVector(normal, j, 0, i);
                     var existingLine = _lines[heightAxis][oldVector];
-                    var newVector = GridUtilities.ConvertToVector(normal, j, 0, i - 1);
+                    var newVector = GridsUtilities.ConvertToVector(normal, j, 0, i - 1);
                     _lines[heightAxis][newVector] = existingLine;
                 }
                 for (var j = 0; j < height; j++)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(normal, 0, j, i);
+                    var oldVector = GridsUtilities.ConvertToVector(normal, 0, j, i);
                     var existingLine = _lines[widthAxis][oldVector];
-                    var newVector = GridUtilities.ConvertToVector(normal, 0, j, i - 1);
+                    var newVector = GridsUtilities.ConvertToVector(normal, 0, j, i - 1);
                     _lines[widthAxis][newVector] = existingLine;
                 }
             }
@@ -519,7 +627,7 @@ namespace GridSystem
         {
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(normal, i, j, index);
+                var vector = GridsUtilities.ConvertToVector(normal, i, j, index);
                 var unit = _units[vector];
                 _units.Remove(vector);
                 unit.DisposeUnit();
@@ -534,9 +642,9 @@ namespace GridSystem
             {
                 for (var j = 0; j < width; j++) for (var k = 0; k < height; k++)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(normal, j, k, i);
+                    var oldVector = GridsUtilities.ConvertToVector(normal, j, k, i);
                     var existingUnit = _units[oldVector];
-                    var newVector = GridUtilities.ConvertToVector(normal, j, k, i - 1);
+                    var newVector = GridsUtilities.ConvertToVector(normal, j, k, i - 1);
                     _units[newVector] = existingUnit;
                     _units.Remove(oldVector);
                     existingUnit._coords = newVector;
@@ -550,9 +658,10 @@ namespace GridSystem
     /// Surface-based grid that contains lines and units on two axes
     /// </summary>
     /// <typeparam name="T">Type of the object to be placed in the grid units</typeparam>
-    public class GridSurface<T> : IEnumerable<IGridLine>, IGridSurface where T : class, IGridElement
+    public class GridSurface<T> : IEnumerable<IGridUnit>, IGridSurface where T : class, IGridObject
     {
-        public IGridVolume Volume => _volume;
+        IGridVolume IGridSurface.Volume => _volume;
+        public GridVolume<T> Volume => _volume;
         public GridAxis Normal { get; }
         public int Dimension { get; }
         public int Width => _lines[Normal.ToHeightAxis()].Count;
@@ -588,37 +697,125 @@ namespace GridSystem
             _lines = new Dictionary<GridAxis, List<GridLine<T>>>(width * height);
         }
 
-        public IGridUnit this[int i, int j] => _lines[Normal.ToHeightAxis()][i]._units[j];
+        IGridUnit IGridSurface.this[int i, int j] => _lines[Normal.ToHeightAxis()][i]._units[j];
+        
+        IGridUnit IGridSurface.this[(int, int) coords] => _lines[Normal.ToHeightAxis()][coords.Item1]._units[coords.Item2];
 
-        public IEnumerator<IGridLine> GetEnumerator() => _lines[Normal.ToHeightAxis()].GetEnumerator();
+        public GridUnit<T> this[int i, int j] => _lines[Normal.ToHeightAxis()][i]._units[j];
+        
+        public GridUnit<T> this[(int, int) coords] => _lines[Normal.ToHeightAxis()][coords.Item1]._units[coords.Item2];
+
+        public IEnumerator<IGridUnit> GetEnumerator() => _units.Values.GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        public IGridLine GetLine(GridAxis axis, int index) => _lines[axis][index];
+        IGridLine IGridSurface.GetLine(GridAxis axis, int index) => _lines[axis][index];
 
-        public IGridUnit GetUnit(int i, int j) => this[i, j];
+        public GridLine<T> GetLine(GridAxis axis, int index) => _lines[axis][index];
 
-        public void CreateSurface<TElement>(Func<TElement> getter) where TElement : IGridElement
+        IGridUnit IGridSurface.GetUnit(int i, int j) => _lines[Normal.ToHeightAxis()][i]._units[j];
+        
+        IGridUnit IGridSurface.GetUnit((int, int) coords) => _lines[Normal.ToHeightAxis()][coords.Item1]._units[coords.Item2];
+
+        public GridUnit<T> GetUnit(int i, int j) => _lines[Normal.ToHeightAxis()][i]._units[j];
+        
+        public GridUnit<T> GetUnit((int, int) coords) => _lines[Normal.ToHeightAxis()][coords.Item1]._units[coords.Item2];
+        
+        IGridUnit[] IGridSurface.GetUnits()
+        {
+            var result = new IGridUnit[Count];
+            var counter = 0;
+            for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++)
+            {
+                result[counter] = _lines[Normal.ToHeightAxis()][i]._units[j];
+                counter++;
+            }
+
+            return result;
+        }
+
+        IGridUnit[] IGridSurface.GetUnits((int, int) fromCoords, (int, int) toCoords)
+        {
+            var result = new IGridUnit[Count];
+            var counter = 0;
+            for (var i = fromCoords.Item1; i < toCoords.Item1; i++)
+            for (var j = fromCoords.Item2; j < toCoords.Item2; j++)
+            {
+                result[counter] = _lines[Normal.ToHeightAxis()][i]._units[j];
+                counter++;
+            }
+
+            return result;
+        }
+
+        public GridUnit<T>[] GetUnits() => _units.Values.ToArray();
+
+        public GridUnit<T>[] GetUnits((int, int) fromCoords, (int, int) toCoords)
+        {
+            var result = new GridUnit<T>[Count];
+            var counter = 0;
+            for (var i = fromCoords.Item1; i < toCoords.Item1; i++)
+            for (var j = fromCoords.Item2; j < toCoords.Item2; j++)
+            {
+                result[counter] = _lines[Normal.ToHeightAxis()][i]._units[j];
+                counter++;
+            }
+
+            return result;
+        }
+
+        void IGridSurface.CreateSurface<TObj>(Func<TObj> getter)
         {
             _getter = getter as Func<T>;
             for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++)
             {
-                this[i, j].CreateUnit(getter);
+                _lines[Normal.ToHeightAxis()][i]._units[j].CreateUnit(_getter);
             }
         }
 
-        public void DisposeSurface()
+        public void CreateSurface(Func<T> getter)
+        {
+            _getter = getter;
+            for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++)
+            {
+                _lines[Normal.ToHeightAxis()][i]._units[j].CreateUnit(getter);
+            }
+        }
+
+        public void RemoveSurface()
+        {
+            var heightAxis = Normal.ToHeightAxis();
+            for (var i = Width - 1; i >= 0; i--) RemoveLine(heightAxis, i);
+        }
+
+        public void ResizeSurface(int width, int height)
+        {
+            var heightAxis = Normal.ToHeightAxis();
+            var widthAxis = Normal.ToWidthAxis();
+            for (var i = Width - 1; i >= width; i--) RemoveLine(heightAxis, i);
+            for (var i = Height - 1; i >= height; i--) RemoveLine(widthAxis, i);
+        }
+
+        public void TrimSurface((int, int) fromCoords, (int, int) toCoords)
+        {
+            var heightAxis = Normal.ToHeightAxis();
+            var widthAxis = Normal.ToWidthAxis();
+            for (var i = toCoords.Item1 - 1; i >= fromCoords.Item1; i--) RemoveLine(heightAxis, i);
+            for (var i = toCoords.Item2 - 1; i >= fromCoords.Item2; i--) RemoveLine(widthAxis, i);
+        }
+
+        public void DisposeUnits()
         {
             for (var i = 0; i < Width; i++) for (var j = 0; j < Height; j++)
             {
-                this[i, j].DisposeUnit();
+                _lines[Normal.ToHeightAxis()][i]._units[j].DisposeUnit();
             }
         }
         
         public void AddLine(GridAxis axis)
         {
-            var length = GridUtilities.GetLength(axis, Normal, Width, Height);
-            var other = GridUtilities.GetOther(axis, Normal, Width, Height);
+            var length = GridsUtilities.GetLength(axis, Normal, Width, Height);
+            var other = GridsUtilities.GetOther(axis, Normal, Width, Height);
             
             AddUnits(axis, length, other);
             AddLine(axis, length, other);
@@ -626,8 +823,8 @@ namespace GridSystem
 
         public void InsertLine(GridAxis axis, int index)
         {
-            var length = GridUtilities.GetLength(axis, Normal, Width, Height);
-            var other = GridUtilities.GetOther(axis, Normal, Width, Height);
+            var length = GridsUtilities.GetLength(axis, Normal, Width, Height);
+            var other = GridsUtilities.GetOther(axis, Normal, Width, Height);
             
             InsertUnits(index, axis, length, other);
             InsertLine(index, axis, length);
@@ -635,8 +832,8 @@ namespace GridSystem
 
         public void RemoveLine(GridAxis axis, int index)
         {
-            var length = GridUtilities.GetLength(axis, Normal, Width, Height);
-            var other = GridUtilities.GetOther(axis, Normal, Width, Height);
+            var length = GridsUtilities.GetLength(axis, Normal, Width, Height);
+            var other = GridsUtilities.GetOther(axis, Normal, Width, Height);
             
             RemoveUnits(index, axis, length, other);
             RemoveLine(index, axis, length);
@@ -660,7 +857,7 @@ namespace GridSystem
                     var line = new GridLine<T>(this, width, widthAxis);
                     for (var k = 0; k < width; k++)
                     {
-                        var vector = GridUtilities.ConvertToVector(Normal, k, j, 0);
+                        var vector = GridsUtilities.ConvertToVector(Normal, k, j, 0);
                         line._units.Add(_units[vector]);
                     }
                     _lines[widthAxis].Add(line);
@@ -670,7 +867,7 @@ namespace GridSystem
                     var line = new GridLine<T>(this, height, heightAxis);
                     for (var k = 0; k < height; k++)
                     {
-                        var vector = GridUtilities.ConvertToVector(Normal, i, k, 0);
+                        var vector = GridsUtilities.ConvertToVector(Normal, i, k, 0);
                         line._units.Add(_units[vector]);
                     }
                     _lines[heightAxis].Add(line);
@@ -682,7 +879,7 @@ namespace GridSystem
         {
             for (var i = 0; i < width; i++) for (var j = 0; j < height; j++)
             {
-                var vector = GridUtilities.ConvertToVector(Normal, i, j, 0);
+                var vector = GridsUtilities.ConvertToVector(Normal, i, j, 0);
                 var unit = new GridUnit<T>(this, vector);
                 unit.CreateUnit(_getter);
                 _units.Add(vector, unit);
@@ -694,7 +891,7 @@ namespace GridSystem
             var line = new GridLine<T>(this, length, axis);
             for (var i = 0; i < length; i++)
             {
-                var vector = GridUtilities.ConvertToVector(axis, Normal, i, other);
+                var vector = GridsUtilities.ConvertToVector(axis, Normal, i, other);
                 line._units.Add(_units[vector]);
             }
 
@@ -705,7 +902,7 @@ namespace GridSystem
         {
             for (var i = 0; i < length; i++)
             {
-                var vector = GridUtilities.ConvertToVector(axis, Normal, i, other);
+                var vector = GridsUtilities.ConvertToVector(axis, Normal, i, other);
                 var newUnit = new GridUnit<T>(this, vector);
                 newUnit.CreateUnit(_getter);
                 _units.Add(vector, newUnit);
@@ -714,10 +911,10 @@ namespace GridSystem
 
         private void InsertLine(int index, GridAxis axis, int length)
         {
-            var otherAxis = GridUtilities.GetOtherAxis(axis, Normal);
+            var otherAxis = GridsUtilities.GetOtherAxis(axis, Normal);
             for (var i = 0; i < length; i++)
             {
-                var vector = GridUtilities.ConvertToVector(axis, Normal, i, index);
+                var vector = GridsUtilities.ConvertToVector(axis, Normal, i, index);
                 var otherLine = _lines[otherAxis][i];
                 otherLine._units.Insert(index, _units[vector]);
             }
@@ -725,7 +922,7 @@ namespace GridSystem
             var newLine = new GridLine<T>(this, length, axis);
             for (var i = 0; i < length; i++)
             {
-                var vector = GridUtilities.ConvertToVector(axis, Normal, i, index);
+                var vector = GridsUtilities.ConvertToVector(axis, Normal, i, index);
                 newLine._units.Add(_units[vector]);
             }
             
@@ -738,9 +935,9 @@ namespace GridSystem
             {
                 for (var j = other - 1; j >= index; j--)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(axis, Normal, i, j);
+                    var oldVector = GridsUtilities.ConvertToVector(axis, Normal, i, j);
                     var existingUnit = _units[oldVector];
-                    var newVector = GridUtilities.ConvertToVector(axis, Normal, i, j + 1);
+                    var newVector = GridsUtilities.ConvertToVector(axis, Normal, i, j + 1);
                     _units[newVector] = existingUnit;
                     _units.Remove(oldVector);
                     existingUnit._coords = newVector;
@@ -750,7 +947,7 @@ namespace GridSystem
 
             for (var i = 0; i < length; i++)
             {
-                var vector = GridUtilities.ConvertToVector(axis, Normal, i, index);
+                var vector = GridsUtilities.ConvertToVector(axis, Normal, i, index);
                 var newUnit = new GridUnit<T>(this, vector);
                 newUnit.CreateUnit(_getter);
                 _units.Add(vector, newUnit);
@@ -759,7 +956,7 @@ namespace GridSystem
 
         private void RemoveLine(int index, GridAxis axis, int length)
         {
-            var otherAxis = GridUtilities.GetOtherAxis(axis, Normal);
+            var otherAxis = GridsUtilities.GetOtherAxis(axis, Normal);
             for (var i = 0; i < length; i++)
             {
                 var otherLine = _lines[otherAxis][i];
@@ -773,7 +970,7 @@ namespace GridSystem
         {
             for (var i = 0; i < length; i++)
             {
-                var vector = GridUtilities.ConvertToVector(axis, Normal, i, index);
+                var vector = GridsUtilities.ConvertToVector(axis, Normal, i, index);
                 var unit = _units[vector];
                 _units.Remove(vector);
                 unit.DisposeUnit();
@@ -788,9 +985,9 @@ namespace GridSystem
             {
                 for (var j = 0; j < length; j++)
                 {
-                    var oldVector = GridUtilities.ConvertToVector(axis, Normal, j, i);
+                    var oldVector = GridsUtilities.ConvertToVector(axis, Normal, j, i);
                     var existingUnit = _units[oldVector];
-                    var newVector = GridUtilities.ConvertToVector(axis, Normal, j, i - 1);
+                    var newVector = GridsUtilities.ConvertToVector(axis, Normal, j, i - 1);
                     _units[newVector] = existingUnit;
                     _units.Remove(oldVector);
                     existingUnit._coords = newVector;
@@ -804,10 +1001,12 @@ namespace GridSystem
     /// Line-based grid that contains units on a single axis
     /// </summary>
     /// <typeparam name="T">Type of the object to be placed in the grid units</typeparam>
-    public class GridLine<T> : IEnumerable<IGridUnit>, IGridLine where T : class, IGridElement
+    public class GridLine<T> : IEnumerable<IGridUnit>, IGridLine where T : class, IGridObject
     {
-        public IGridVolume Volume => _volume;
-        public IGridSurface Surface => _surface;
+        IGridVolume IGridLine.Volume => _volume;
+        IGridSurface IGridLine.Surface => _surface;
+        public GridVolume<T> Volume => _volume;
+        public GridSurface<T> Surface => _surface;
         public GridAxis Axis { get; }
         public int Dimension { get; }
         public int Count => _units.Count;
@@ -847,24 +1046,87 @@ namespace GridSystem
             _units = new List<GridUnit<T>>(length);
         }
         
-        public IGridUnit this[int i] => _units[i];
+        IGridUnit IGridLine.this[int i] => _units[i];
+        
+        public GridUnit<T> this[int i] => _units[i];
 
         public IEnumerator<IGridUnit> GetEnumerator() => _units.GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        public IGridUnit GetUnit(int index) => this[index];
+        IGridUnit IGridLine.GetUnit(int index) => _units[index];
 
-        public void CreateLine<TElement>(Func<TElement> getter) where TElement : IGridElement
+        public GridUnit<T> GetUnit(int index) => _units[index];
+
+        IGridUnit[] IGridLine.GetUnits()
+        {
+            var result = new IGridUnit[Count];
+            for (var i = 0; i < Count; i++)
+            {
+                result[i] = _units[i];
+            }
+
+            return result;
+        }
+
+        IGridUnit[] IGridLine.GetUnits(int from, int to)
+        {
+            var result = new IGridUnit[Count];
+            for (var i = from; i < to; i++)
+            {
+                result[i] = _units[i];
+            }
+
+            return result;
+        }
+
+        public GridUnit<T>[] GetUnits() => _units.ToArray();
+
+        public GridUnit<T>[] GetUnits(int from, int to)
+        {
+            var result = new GridUnit<T>[Count];
+            for (var i = from; i < to; i++)
+            {
+                result[i] = _units[i];
+            }
+
+            return result;
+        }
+
+        void IGridLine.CreateLine<TObj>(Func<TObj> getter)
         {
             _getter = getter as Func<T>;
             for (var i = 0; i < Length; i++)
             {
-                this[i].CreateUnit(getter);
+                _units[i].CreateUnit(_getter);
             }
         }
 
-        public void DisposeLine()
+        public void CreateLine(Func<T> getter)
+        {
+            _getter = getter;
+            for (var i = 0; i < Length; i++)
+            {
+                _units[i].CreateUnit(getter);
+            }
+        }
+
+        public void RemoveLine()
+        {
+            for (var i = Length - 1; i >= 0; i--) RemoveUnit(i);
+        }
+
+        public void ResizeLine(int length)
+        {
+            for (var i = Length - 1; i >= length; i--) RemoveUnit(i);
+        }
+
+        public void TrimLine(int from, int to)
+        {
+            for (var i = to - 1; i >= from; i--) RemoveUnit(i);
+        }
+
+        public void DisposeUnits()
         {
             for (var i = 0; i < Length; i++)
             {
@@ -923,12 +1185,16 @@ namespace GridSystem
     /// Units to be placed in lines, surfaces, or volumes that carry objects
     /// </summary>
     /// <typeparam name="T">Type of the object to be placed in the grid units</typeparam>
-    public class GridUnit<T> : IGridUnit where T : class, IGridElement
+    public class GridUnit<T> : IGridUnit where T : class, IGridObject
     {
-        public IGridElement Element => _value;
-        public IGridVolume Volume => _volume;
-        public IGridSurface Surface => _surface;
-        public IGridLine Line => _line;
+        IGridObject IGridUnit.Object => _object;
+        IGridVolume IGridUnit.Volume => _volume;
+        IGridSurface IGridUnit.Surface => _surface;
+        IGridLine IGridUnit.Line => _line;
+        public T Object => _object;
+        public GridVolume<T> Volume => _volume;
+        public GridSurface<T> Surface => _surface;
+        public GridLine<T> Line => _line;
         public (int, int, int) Coords => _coords;
         public int Dimension { get; }
 
@@ -937,8 +1203,8 @@ namespace GridSystem
         private readonly GridSurface<T> _surface;
         private readonly GridLine<T> _line;
         private Func<T> _getter;
-        private bool _hasValue;
-        private T _value;
+        private bool _hasObject;
+        private T _object;
         
         public GridUnit()
         {
@@ -976,9 +1242,30 @@ namespace GridSystem
             Dimension = 1;
         }
 
-        public void CreateUnit<TElement>(Func<TElement> getter) where TElement : IGridElement
+        void IGridUnit.SetObject<TObj>(TObj obj)
+        {
+            SetField(obj);
+            _hasObject = true;
+            _object = obj as T;
+        }
+
+        public void SetObject(T obj)
+        {
+            if (_hasObject) _object.OnDispose();
+            _hasObject = true;
+            _object = obj;
+            SetField(obj);
+        }
+
+        void IGridUnit.CreateUnit<TObj>(Func<TObj> getter)
         {
             _getter = getter as Func<T>;
+            OnCreate();
+        }
+
+        public void CreateUnit(Func<T> getter)
+        {
+            _getter = getter;
             OnCreate();
         }
 
@@ -991,29 +1278,58 @@ namespace GridSystem
         {
             if (_getter == null) return;
             
-            _value = _getter.Invoke();
-            var field = _value.GetType().GetField("<Unit>k__BackingField",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-
-            if (field == null) return;
-            field.SetValue(_value, this);
-            _hasValue = true;
-            _value.OnCreate();
+            _object = _getter.Invoke();
+            SetField(_object);
+            _hasObject = true;
+            _object.OnCreate();
         }
 
         private void OnDispose()
         {
-            if (_hasValue) _value.OnDispose();
+            if (_hasObject) _object.OnDispose();
         }
 
         internal void OnShift()
         {
-            if (_hasValue) _value.OnShift();
+            if (_hasObject) _object.OnShift();
+        }
+        
+        private void SetField(object obj)
+        {
+            if (GridsUtilities.TryFindBackingField(obj, "GridUnit", out var field))
+            {
+                field.SetValue(obj, this);
+            }
         }
     }
     
-    internal static class GridUtilities
+    public static partial class GridsUtilities
     {
+        internal static bool TryFindBackingField(object obj, string propertyName, out FieldInfo fieldInfo)
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            
+            var backingField = $"<{propertyName}>k__BackingField";
+            var type = obj.GetType();
+            var found = false;
+            fieldInfo = null;
+            do
+            {
+                var info = type.GetField(backingField, flags);
+                if (info != null)
+                {
+                    fieldInfo = info;
+                    found = true;
+                }
+                else
+                {
+                    type = type.BaseType;
+                }
+            } while (!found && type != null);
+
+            return found;
+        }
+        
         internal static int GetWidth(GridAxis normal, int x, int y, int z)
         {
             return normal switch
@@ -1087,7 +1403,7 @@ namespace GridSystem
         }
     }
 
-    internal static class GridExtensions
+    public static partial class GridsExtensions
     {
         internal static GridAxis ToWidthAxis(this GridAxis normal)
         {
@@ -1131,6 +1447,46 @@ namespace GridSystem
                 GridAxis.z => (0, 0, i),
                 _ => default
             };
+        }
+
+        public static IGridVolume GetVolume(this IGridObject obj)
+        {
+            return obj.GridUnit.Volume;
+        }
+
+        public static GridVolume<T> GetVolume<T>(this T obj) where T : class, IGridObject
+        {
+            return obj.GetUnit().Volume;
+        }
+
+        public static IGridSurface GetSurface(this IGridObject obj)
+        {
+            return obj.GridUnit.Surface;
+        }
+
+        public static GridSurface<T> GetSurface<T>(this T obj) where T : class, IGridObject
+        {
+            return obj.GetUnit().Surface;
+        }
+
+        public static IGridLine GetLine(this IGridObject obj)
+        {
+            return obj.GridUnit.Line;
+        }
+
+        public static GridLine<T> GetLine<T>(this T obj) where T : class, IGridObject
+        {
+            return obj.GetUnit().Line;
+        }
+
+        public static IGridUnit GetUnit(this IGridObject obj)
+        {
+            return obj.GridUnit;
+        }
+
+        public static GridUnit<T> GetUnit<T>(this T obj) where T : class, IGridObject
+        {
+            return (GridUnit<T>)obj.GridUnit;
         }
     }
 }
