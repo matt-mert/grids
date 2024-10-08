@@ -69,7 +69,7 @@ namespace GridSystem
     /// <summary>
     /// Base interface for 2d surface-based grids
     /// </summary>
-    public interface IGridSurface
+    public interface IGridSurface : IEnumerable<IGridUnit>
     {
         IGridVolume Volume { get; }
         GridAxis Normal { get; }
@@ -98,7 +98,7 @@ namespace GridSystem
     /// <summary>
     /// Base interface for 1d line-based grids
     /// </summary>
-    public interface IGridLine
+    public interface IGridLine : IEnumerable<IGridUnit>
     {
         IGridVolume Volume { get; }
         IGridSurface Surface { get; }
@@ -658,7 +658,7 @@ namespace GridSystem
     /// Surface-based grid that contains lines and units on two axes
     /// </summary>
     /// <typeparam name="T">Type of the object to be placed in the grid units</typeparam>
-    public class GridSurface<T> : IEnumerable<IGridUnit>, IGridSurface where T : class, IGridObject
+    public class GridSurface<T> : IGridSurface where T : class, IGridObject
     {
         IGridVolume IGridSurface.Volume => _volume;
         public GridVolume<T> Volume => _volume;
@@ -1001,7 +1001,7 @@ namespace GridSystem
     /// Line-based grid that contains units on a single axis
     /// </summary>
     /// <typeparam name="T">Type of the object to be placed in the grid units</typeparam>
-    public class GridLine<T> : IEnumerable<IGridUnit>, IGridLine where T : class, IGridObject
+    public class GridLine<T> : IGridLine where T : class, IGridObject
     {
         IGridVolume IGridLine.Volume => _volume;
         IGridSurface IGridLine.Surface => _surface;
