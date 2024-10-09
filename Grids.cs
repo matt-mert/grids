@@ -79,7 +79,6 @@ namespace GridSystem
         int Dimension { get; }
         IGridUnit this[int i, int j] { get; }
         IGridUnit this[(int, int) coords] { get; }
-        IEnumerator<IGridUnit> GetEnumerator();
         IGridLine GetLine(GridAxis axis, int index);
         IGridUnit GetUnit(int i, int j);
         IGridUnit GetUnit((int, int) coords);
@@ -107,7 +106,6 @@ namespace GridSystem
         int Length { get; }
         int Dimension { get; }
         IGridUnit this[int i] { get; }
-        IEnumerator<IGridUnit> GetEnumerator();
         IGridUnit GetUnit(int i);
         IGridUnit[] GetUnits();
         IGridUnit[] GetUnits(int from, int to);
