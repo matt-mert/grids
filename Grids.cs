@@ -3,8 +3,6 @@
 // ========================================================================================
 // 2024, Mert Kucukakinci  / https://github.com/matt-mert
 // ========================================================================================
-// The grid system does not depend Unity Engine.
-// ========================================================================================
 
 using System;
 using System.Collections;
@@ -23,7 +21,7 @@ namespace GridSystem
         y,
         z
     }
-    
+
     /// <summary>
     /// Base interface for objects to be placed int the grid units
     /// </summary>
